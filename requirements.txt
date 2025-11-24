@@ -1,0 +1,7 @@
+pyvisa
+numpy
+matplotlib
+pandas
+pyserial
+pymodbus
+jupyterlab
