@@ -1,6 +1,3 @@
-# measurement_automation
-Automated antenna characterization rig combining a stepping motor, a vector analyzer and a PSU
-
 ## Antenna Measurement Rig
 
 Concise, single-file control program for automated antenna S-parameter measurements
