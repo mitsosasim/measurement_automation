@@ -1,4 +1,3 @@
-import socket
 import pyvisa
 from typing import Optional, Protocol, Tuple, Literal
 
@@ -98,79 +97,171 @@ class N8957A:
 
 
 class PSW720H88Lan:
-    def __init__(self, ip: str = GWINSTEK_PSW720H88_DEFAULT_IP, port: int = GWINSTEK_PSW720H88_DEFAULT_PORT, timeout_s: float = 5.0, channel: int = GWINSTEK_PSW720H88_DEFAULT_CHANNEL):
-        self.ip = ip
+    """
+    GW Instek PSW-720H88 LAN backend.
+
+    Controls one selected channel only.
+    PSW-720H88 channel rating:
+      CH1: 0-800 V, 0-1.44 A
+      CH2: 0-800 V, 0-1.44 A
+    """
+
+    V_MIN = 0.0
+    V_MAX = 800.0
+    I_MIN = 0.0
+    I_MAX = 1.44
+
+    def __init__(
+        self,
+        ip_address: str = GWINSTEK_PSW720H88_DEFAULT_IP,
+        port: int = GWINSTEK_PSW720H88_DEFAULT_PORT,
+        channel: int = GWINSTEK_PSW720H88_DEFAULT_CHANNEL,
+        timeout_ms: int = 10000,
+        strict_idn: bool = True,
+    ):
+        if channel not in (1, 2):
+            raise ValueError("PSW-720H88 channel must be 1 or 2.")
+
+        ip_address = str(ip_address).strip()
+        if not ip_address:
+            raise ValueError("PSW-720H88 LAN IP address must not be empty.")
+
+        if int(port) != 2268:
+            raise ValueError("PSW-720H88 socket server port must be 2268.")
+
+        self.ip_address = ip_address
         self.port = int(port)
-        self.timeout_s = float(timeout_s)
         self.channel = int(channel)
-        self.sock = socket.create_connection((self.ip, self.port), timeout=self.timeout_s)
-        self.sock.settimeout(self.timeout_s)
+        self.resource_name = f"TCPIP0::{self.ip_address}::{self.port}::SOCKET"
 
-    def _write(self, cmd: str) -> None:
-        self.sock.sendall((cmd + "\n").encode("ascii"))
+        rm = pyvisa.ResourceManager()
+        self.inst = rm.open_resource(self.resource_name)
+        self.inst.timeout = timeout_ms
+        self.inst.write_termination = "\n"
+        self.inst.read_termination = "\n"
 
-    def _query(self, cmd: str) -> str:
-        self._write(cmd)
-        chunks = []
-        while True:
-            data = self.sock.recv(4096)
-            if not data:
-                break
-            chunks.append(data)
-            if b"\n" in data:
-                break
-        return b"".join(chunks).decode(errors="ignore").strip()
+        try:
+            self.inst.set_visa_attribute(pyvisa.constants.VI_ATTR_TERMCHAR, ord("\n"))
+            self.inst.set_visa_attribute(pyvisa.constants.VI_ATTR_TERMCHAR_EN, True)
+        except Exception:
+            pass
 
-    def _chan_cmd(self, base_cmd: str) -> str:
-        return f"{base_cmd}{self.channel}" if self.channel > 0 else base_cmd
+        self.clear()
 
-    def clear(self):
-        pass
+        if strict_idn:
+            idn = self.idn()
+            idn_upper = idn.upper()
+            if "GW" not in idn_upper and "INSTEK" not in idn_upper:
+                raise RuntimeError(f"Expected GW Instek PSW supply, got IDN: {idn!r}")
+            if "PSW" not in idn_upper:
+                raise RuntimeError(f"Expected PSW model, got IDN: {idn!r}")
+
+    def _chan_set(self) -> str:
+        return f",(@{self.channel})"
+
+    def _chan_query(self) -> str:
+        return f" (@{self.channel})"
+
+    def clear(self) -> None:
+        try:
+            self.inst.clear()
+        except Exception:
+            pass
+        try:
+            self.inst.write("*CLS")
+        except Exception:
+            pass
 
     def idn(self) -> str:
-        return self._query("*IDN?")
+        return self.inst.query("*IDN?").strip()
 
-    def output_on(self):
-        self._write(self._chan_cmd("OUTP") + " ON")
+    def _query_float(self, cmd: str) -> float:
+        reply = self.inst.query(cmd).strip()
+        try:
+            return float(reply)
+        except ValueError as exc:
+            raise RuntimeError(f"Invalid numeric reply for {cmd!r}: {reply!r}") from exc
 
-    def output_off(self):
-        self._write(self._chan_cmd("OUTP") + " OFF")
+    def _query_bool(self, cmd: str) -> bool:
+        reply = self.inst.query(cmd).strip()
+        try:
+            return bool(int(float(reply)))
+        except ValueError as exc:
+            raise RuntimeError(f"Invalid boolean reply for {cmd!r}: {reply!r}") from exc
 
-    def output_state(self) -> bool:
-        resp = self._query(self._chan_cmd("OUTP") + "?")
-        return bool(int(float(resp)))
+    def _check_error_queue(self) -> None:
+        try:
+            reply = self.inst.query("SYST:ERR?").strip()
+        except Exception:
+            return
 
-    def set_voltage(self, volts: float):
-        self._write(self._chan_cmd("VOLT") + f" {volts}")
+        first = reply.split(",", 1)[0].strip()
+        try:
+            code = int(float(first))
+        except ValueError:
+            return
 
-    def set_current(self, amps: float):
-        self._write(self._chan_cmd("CURR") + f" {amps}")
+        if code != 0:
+            raise RuntimeError(f"GW Instek PSW SCPI error after command: {reply}")
+
+    def _validate_voltage(self, volts: float) -> None:
+        if not (self.V_MIN <= float(volts) <= self.V_MAX):
+            raise ValueError(
+                f"Requested voltage {volts:.6g} V is outside PSW-720H88 "
+                f"channel {self.channel} software range {self.V_MIN}..{self.V_MAX} V."
+            )
+
+    def _validate_current(self, amps: float) -> None:
+        if not (self.I_MIN <= float(amps) <= self.I_MAX):
+            raise ValueError(
+                f"Requested current {amps:.6g} A is outside PSW-720H88 "
+                f"channel {self.channel} software range {self.I_MIN}..{self.I_MAX} A."
+            )
+
+    def set_voltage(self, volts: float) -> None:
+        self._validate_voltage(volts)
+        self.inst.write(f"SOUR:VOLT:LEV:IMM:AMPL {float(volts):.12g}{self._chan_set()}")
+        self._check_error_queue()
+
+    def set_current(self, amps: float) -> None:
+        self._validate_current(amps)
+        self.inst.write(f"SOUR:CURR:LEV:IMM:AMPL {float(amps):.12g}{self._chan_set()}")
+        self._check_error_queue()
 
     def get_voltage_set(self) -> float:
-        return float(self._query(self._chan_cmd("VOLT") + "?"))
+        return self._query_float(f"SOUR:VOLT:LEV:IMM:AMPL?{self._chan_query()}")
 
     def get_current_set(self) -> float:
-        return float(self._query(self._chan_cmd("CURR") + "?"))
+        return self._query_float(f"SOUR:CURR:LEV:IMM:AMPL?{self._chan_query()}")
 
     def voltage_limits(self) -> Tuple[float, float]:
-        vmin = float(self._query(self._chan_cmd("VOLT") + "? MIN"))
-        vmax = float(self._query(self._chan_cmd("VOLT") + "? MAX"))
-        return vmin, vmax
+        return self.V_MIN, self.V_MAX
 
     def current_limits(self) -> Tuple[float, float]:
-        imin = float(self._query(self._chan_cmd("CURR") + "? MIN"))
-        imax = float(self._query(self._chan_cmd("CURR") + "? MAX"))
-        return imin, imax
+        return self.I_MIN, self.I_MAX
+
+    def output_on(self) -> None:
+        self.inst.write(f"OUTP ON{self._chan_set()}")
+        self._check_error_queue()
+        if not self.output_state():
+            raise RuntimeError(f"PSW-720H88 channel {self.channel} did not report output ON.")
+
+    def output_off(self) -> None:
+        self.inst.write(f"OUTP OFF{self._chan_set()}")
+        self._check_error_queue()
+
+    def output_state(self) -> bool:
+        return self._query_bool(f"OUTP?{self._chan_query()}")
 
     def measure_voltage(self) -> float:
-        return float(self._query(self._chan_cmd("MEAS:VOLT") + "?"))
+        return self._query_float(f"MEAS:SCAL:VOLT:DC?{self._chan_query()}")
 
     def measure_current(self) -> float:
-        return float(self._query(self._chan_cmd("MEAS:CURR") + "?"))
+        return self._query_float(f"MEAS:SCAL:CURR:DC?{self._chan_query()}")
 
-    def close(self):
+    def close(self) -> None:
         try:
-            self.sock.close()
+            self.inst.close()
         except Exception:
             pass
 
@@ -180,7 +271,7 @@ def create_psu(kind: PsuKind = "keysight_n8957a", *, addr: Optional[str] = None,
         return N8957A(addr=addr or KEYSIGHT_N8957A_ADDR)
     if kind == "gwinstek_psw720h88_lan":
         return PSW720H88Lan(
-            ip=ip or GWINSTEK_PSW720H88_DEFAULT_IP,
+            ip_address=ip or GWINSTEK_PSW720H88_DEFAULT_IP,
             port=port or GWINSTEK_PSW720H88_DEFAULT_PORT,
             channel=channel or GWINSTEK_PSW720H88_DEFAULT_CHANNEL,
         )
