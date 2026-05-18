@@ -25,6 +25,7 @@ from scripts.psu import (
     GWINSTEK_PSW720H88_DEFAULT_IP,
     GWINSTEK_PSW720H88_DEFAULT_PORT,
     GWINSTEK_PSW720H88_DEFAULT_CHANNEL,
+    KEYSIGHT_N8957A_ADDR,
 )
 
 
@@ -604,9 +605,10 @@ def run_scan(
     measure_s11: bool,
     measure_s21: bool,
     psu_kind: PsuKind,
-    psu_ip: str,
-    psu_port: int,
-    psu_channel: int,
+    keysight_psu_addr: str,
+    gwinstek_psw_ip: str,
+    gwinstek_psw_port: int,
+    gwinstek_psw_channel: int,
 ) -> None:
 
     center_hz = vna_center_ghz * 1e9
@@ -623,11 +625,30 @@ def run_scan(
     # PSU
     psu = create_psu(
         psu_kind,
-        gwinstek_ip=psu_ip,
-        gwinstek_port=psu_port,
-        gwinstek_channel=psu_channel,
+        keysight_addr=keysight_psu_addr,
+        gwinstek_ip=gwinstek_psw_ip,
+        gwinstek_port=gwinstek_psw_port,
+        gwinstek_channel=gwinstek_psw_channel,
     )
+    log(f"[PSU] Backend: {psu_kind}")
     log(f"[PSU] ID: {psu.idn()}")
+
+    vmin, vmax = psu.voltage_limits()
+    imin, imax = psu.current_limits()
+
+    log(f"[PSU] Limits: {vmin:.6g}..{vmax:.6g} V, {imin:.6g}..{imax:.6g} A")
+
+    if not (vmin <= set_voltage_v <= vmax):
+        raise RuntimeError(
+            f"Requested voltage {set_voltage_v:.6g} V is outside selected PSU range "
+            f"{vmin:.6g}..{vmax:.6g} V."
+        )
+
+    if not (imin <= set_current_a <= imax):
+        raise RuntimeError(
+            f"Requested current {set_current_a:.6g} A is outside selected PSU range "
+            f"{imin:.6g}..{imax:.6g} A."
+        )
 
     # VNA
     vna = HP8720C()
@@ -770,6 +791,7 @@ class ScanGUI:
             width=24,
         ).grid(row=row, column=1, columnspan=2, sticky="w", pady=2)
         row += 1
+        self.keysight_psu_addr_var = add_entry("Keysight GPIB addr", KEYSIGHT_N8957A_ADDR, "")
         self.psu_ip_var = add_entry("PSW LAN IP", GWINSTEK_PSW720H88_DEFAULT_IP, "")
         self.psu_port_var = add_entry("PSW LAN port", GWINSTEK_PSW720H88_DEFAULT_PORT, "")
         self.psu_channel_var = add_entry("PSW channel", GWINSTEK_PSW720H88_DEFAULT_CHANNEL, "")
@@ -862,6 +884,7 @@ class ScanGUI:
             v_tol_abs = float(self.v_tol_var.get())
             i_tol_abs = float(self.i_tol_var.get())
             psu_kind = self.psu_kind_var.get()
+            keysight_psu_addr = self.keysight_psu_addr_var.get().strip()
             psu_ip = self.psu_ip_var.get().strip()
             psu_port = int(self.psu_port_var.get())
             psu_channel = int(self.psu_channel_var.get())
@@ -918,9 +941,10 @@ class ScanGUI:
                     measure_s11=s11_enabled,
                     measure_s21=s21_enabled,
                     psu_kind=psu_kind,
-                    psu_ip=psu_ip,
-                    psu_port=psu_port,
-                    psu_channel=psu_channel,
+                    keysight_psu_addr=keysight_psu_addr,
+                    gwinstek_psw_ip=psu_ip,
+                    gwinstek_psw_port=psu_port,
+                    gwinstek_psw_channel=psu_channel,
                 )
             except Exception as e:
                 self.gui_log(f"ERROR: {e}")
