@@ -21,6 +21,7 @@ from tkinter import ttk, filedialog, messagebox
 from scripts.psu import (
     PsuDevice,
     PsuKind,
+    PSW720H88Lan,
     create_psu,
     GWINSTEK_PSW720H88_DEFAULT_IP,
     GWINSTEK_PSW720H88_DEFAULT_PORT,
@@ -891,6 +892,12 @@ class ScanGUI:
         self.start_button.grid(row=0, column=0, padx=(0, 6))
         self.stop_button = ttk.Button(button_frame, text="Stop", command=self.on_stop, state="disabled")
         self.stop_button.grid(row=0, column=1)
+        self.test_gw_psw_lan_button = ttk.Button(
+            button_frame,
+            text="Test GW PSW LAN",
+            command=self.on_test_gw_psw_lan,
+        )
+        self.test_gw_psw_lan_button.grid(row=0, column=2, padx=(6, 0))
 
         #log area 
         self.log_text = tk.Text(log_frame, height=18, wrap="none", state="disabled")
@@ -918,6 +925,48 @@ class ScanGUI:
             self.log_text.configure(state="disabled")
 
         self.root.after(0, append)
+
+    def on_test_gw_psw_lan(self):
+        if self.scan_thread is not None and self.scan_thread.is_alive():
+            messagebox.showerror("Scan in progress", "Stop the scan before testing GW PSW LAN.")
+            return
+
+        try:
+            ip_address = self.gwinstek_psw_ip_var.get().strip()
+            port = int(self.gwinstek_psw_port_var.get())
+            channel = int(self.gwinstek_psw_channel_var.get())
+        except Exception as exc:
+            messagebox.showerror("Invalid input", f"Please check GW PSW LAN settings.\n\n{exc}")
+            return
+
+        self.test_gw_psw_lan_button.config(state="disabled")
+        self.gui_log(f"[PSU TEST] Connecting to GW PSW LAN at {ip_address}:{port} channel {channel} ...")
+
+        def worker():
+            psw = None
+            try:
+                psw = PSW720H88Lan(ip_address=ip_address, port=port, channel=channel)
+                idn = psw.idn()
+                vmin, vmax = psw.voltage_limits()
+                imin, imax = psw.current_limits()
+                output_enabled = psw.output_state()
+                self.gui_log(f"[PSU TEST] IDN: {idn}")
+                self.gui_log(f"[PSU TEST] Limits: {vmin:.6g}..{vmax:.6g} V, {imin:.6g}..{imax:.6g} A")
+                self.gui_log(f"[PSU TEST] Output state (query only): {'ON' if output_enabled else 'OFF'}")
+                self.gui_log("[PSU TEST] SUCCESS: GW PSW LAN connection is healthy.")
+                self.root.after(0, lambda: messagebox.showinfo("GW PSW LAN test", "Connection test passed."))
+            except Exception as exc:
+                self.gui_log(f"[PSU TEST] FAILURE: {exc}")
+                self.root.after(0, lambda: messagebox.showerror("GW PSW LAN test failed", str(exc)))
+            finally:
+                if psw is not None:
+                    try:
+                        psw.close()
+                    except Exception:
+                        pass
+                self.root.after(0, lambda: self.test_gw_psw_lan_button.config(state="normal"))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def on_start(self):
         if self.scan_thread is not None and self.scan_thread.is_alive():
@@ -982,6 +1031,7 @@ class ScanGUI:
         self.stop_requested = False
         self.start_button.config(state="disabled")
         self.stop_button.config(state="normal")
+        self.test_gw_psw_lan_button.config(state="disabled")
         self.use_gwinstek_psw_check.config(state="disabled")
         self.gwinstek_psw_ip_entry.config(state="disabled")
         self.gwinstek_psw_port_entry.config(state="disabled")
@@ -1026,6 +1076,7 @@ class ScanGUI:
                 def reenable():
                     self.start_button.config(state="normal")
                     self.stop_button.config(state="disabled")
+                    self.test_gw_psw_lan_button.config(state="normal")
                     self.use_gwinstek_psw_check.config(state="normal")
                     self.gwinstek_psw_ip_entry.config(state="normal")
                     self.gwinstek_psw_port_entry.config(state="normal")
