@@ -11,20 +11,28 @@ import csv
 import threading
 import time
 from pathlib import Path
-from typing import Tuple, Callable
+from typing import Tuple, Callable, Protocol, Literal
 import serial
 import struct
 import numpy as np
 import pyvisa
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from scripts.psu import (
-    PsuDevice,
-    PsuKind,
-    PSW720H88Lan,
-    create_psu,
-)
 
+USE_PSW720_BY_DEFAULT = True
+
+KEYSIGHT_N8957A_ADDR = "GPIB0::5::INSTR"
+
+GWINSTEK_PSW720H88_IP = "192.168.1.125"
+GWINSTEK_PSW720H88_PORT = 2268
+GWINSTEK_PSW720H88_DEFAULT_CHANNEL_SELECTION = "1"
+
+
+def parse_psw_channel_selection(value: str) -> str:
+    value = str(value).strip().lower()
+    if value in ("1", "2", "both"):
+        return value
+    raise ValueError("PSW channel must be '1', '2', or 'both'.")
 
 #####RS485 MOTOR
 
@@ -270,23 +278,252 @@ def move_abs(rtu: RTU, steps: int) -> bool:
 
 
 
+
+
+PsuKind = Literal["keysight_n8957a", "gwinstek_psw720h88_lan"]
+
+
+class PsuDevice(Protocol):
+    def idn(self) -> str: ...
+    def output_on(self) -> None: ...
+    def output_off(self) -> None: ...
+    def output_state(self) -> bool: ...
+    def set_voltage(self, volts: float) -> None: ...
+    def set_current(self, amps: float) -> None: ...
+    def get_voltage_set(self) -> float: ...
+    def get_current_set(self) -> float: ...
+    def voltage_limits(self) -> Tuple[float, float]: ...
+    def current_limits(self) -> Tuple[float, float]: ...
+    def measure_voltage(self) -> float: ...
+    def measure_current(self) -> float: ...
+    def close(self) -> None: ...
+
+
+class N8957A:
+    def __init__(self, addr: str = KEYSIGHT_N8957A_ADDR, timeout_ms: int = 10000):
+        rm = pyvisa.ResourceManager()
+        self.inst = rm.open_resource(addr)
+        self.inst.timeout = timeout_ms
+        self.clear()
+
+    def clear(self):
+        try:
+            self.inst.clear()
+        except Exception:
+            pass
+
+    def idn(self) -> str:
+        return self.inst.query("*IDN?").strip()
+
+    def output_on(self):
+        self.inst.write("OUTP ON")
+
+    def output_off(self):
+        self.inst.write("OUTP OFF")
+
+    def output_state(self) -> bool:
+        return bool(int(self.inst.query("OUTP?").strip()))
+
+    def set_voltage(self, volts: float):
+        self.inst.write(f"VOLT {volts}")
+
+    def set_current(self, amps: float):
+        self.inst.write(f"CURR {amps}")
+
+    def get_voltage_set(self) -> float:
+        return float(self.inst.query("VOLT?"))
+
+    def get_current_set(self) -> float:
+        return float(self.inst.query("CURR?"))
+
+    def voltage_limits(self) -> Tuple[float, float]:
+        return float(self.inst.query("VOLT? MIN")), float(self.inst.query("VOLT? MAX"))
+
+    def current_limits(self) -> Tuple[float, float]:
+        return float(self.inst.query("CURR? MIN")), float(self.inst.query("CURR? MAX"))
+
+    def measure_voltage(self) -> float:
+        return float(self.inst.query("MEAS:VOLT?"))
+
+    def measure_current(self) -> float:
+        return float(self.inst.query("MEAS:CURR?"))
+
+    def close(self):
+        try:
+            self.inst.close()
+        except Exception:
+            pass
+
+
+class PSW720H88Lan:
+    V_MIN = 0.0
+    V_MAX = 800.0
+    I_MIN = 0.0
+    I_MAX = 1.44
+
+    def __init__(self, ip_address: str = GWINSTEK_PSW720H88_IP, port: int = GWINSTEK_PSW720H88_PORT, channel_selection: str = GWINSTEK_PSW720H88_DEFAULT_CHANNEL_SELECTION, timeout_ms: int = 10000, strict_idn: bool = True):
+        self.ip_address = str(ip_address).strip()
+        self.port = int(port)
+        self.channel_selection = parse_psw_channel_selection(channel_selection)
+        if not self.ip_address:
+            raise ValueError("PSW-720H88 LAN IP address must not be empty.")
+        if self.port != 2268:
+            raise ValueError("PSW-720H88 socket server port must be 2268.")
+        self.resource_name = f"TCPIP0::{self.ip_address}::{self.port}::SOCKET"
+        rm = pyvisa.ResourceManager()
+        self.inst = rm.open_resource(self.resource_name)
+        self.inst.timeout = timeout_ms
+        self.inst.write_termination = "\n"
+        self.inst.read_termination = "\n"
+        try:
+            self.inst.set_visa_attribute(pyvisa.constants.VI_ATTR_TERMCHAR, ord("\n"))
+            self.inst.set_visa_attribute(pyvisa.constants.VI_ATTR_TERMCHAR_EN, True)
+        except Exception:
+            pass
+        self.clear()
+        if strict_idn:
+            idn = self.idn().upper()
+            if ("GW" not in idn and "INSTEK" not in idn) or "PSW" not in idn:
+                raise RuntimeError(f"Expected GW Instek PSW supply, got IDN: {idn!r}")
+
+    def _selected_channels(self) -> tuple[int, ...]:
+        if self.channel_selection == "both":
+            return (1, 2)
+        return (int(self.channel_selection),)
+
+    def _chan_set(self) -> str:
+        body = ",".join(str(ch) for ch in self._selected_channels())
+        return f",(@{body})"
+
+    def _chan_query(self, channel: int) -> str:
+        return f" (@{channel})"
+
+    def clear(self):
+        try: self.inst.clear()
+        except Exception: pass
+        try: self.inst.write("*CLS")
+        except Exception: pass
+
+    def _check_error_queue(self) -> None:
+        reply = self.inst.query("SYST:ERR?").strip()
+        first = reply.split(",",1)[0].strip()
+        if int(float(first)) != 0:
+            raise RuntimeError(f"GW Instek PSW SCPI error after command: {reply}")
+
+    def _query_float(self, cmd: str) -> float:
+        return float(self.inst.query(cmd).strip())
+
+    def _query_bool(self, cmd: str) -> bool:
+        return bool(int(float(self.inst.query(cmd).strip())))
+
+    def idn(self) -> str:
+        return self.inst.query("*IDN?").strip()
+
+    def _validate_voltage(self, volts: float) -> None:
+        if not (self.V_MIN <= float(volts) <= self.V_MAX):
+            raise ValueError(f"Requested voltage {volts:.6g} V is outside PSW-720H88 software range {self.V_MIN}..{self.V_MAX} V.")
+
+    def _validate_current(self, amps: float) -> None:
+        if not (self.I_MIN <= float(amps) <= self.I_MAX):
+            raise ValueError(f"Requested current {amps:.6g} A is outside PSW-720H88 software range {self.I_MIN}..{self.I_MAX} A.")
+
+    def set_voltage(self, volts: float) -> None:
+        self._validate_voltage(volts)
+        self.inst.write(f"SOUR:VOLT:LEV:IMM:AMPL {float(volts):.12g}{self._chan_set()}")
+        self._check_error_queue()
+
+    def set_current(self, amps: float) -> None:
+        self._validate_current(amps)
+        self.inst.write(f"SOUR:CURR:LEV:IMM:AMPL {float(amps):.12g}{self._chan_set()}")
+        self._check_error_queue()
+
+    def output_on(self) -> None:
+        self.inst.write(f"OUTP ON{self._chan_set()}")
+        self._check_error_queue()
+        last_state = False
+        for _ in range(10):
+            last_state = self.output_state()
+            if last_state:
+                return
+            time.sleep(0.1)
+        try:
+            meas_v = self.measure_voltage()
+        except Exception as exc:
+            meas_v = f"unavailable ({exc})"
+        raise RuntimeError(f"PSW output_on failed for channel selection {self.channel_selection!r}: last output_state={last_state}, measured_voltage={meas_v}")
+
+    def output_off(self) -> None:
+        self.inst.write(f"OUTP OFF{self._chan_set()}")
+        self._check_error_queue()
+
+    def output_state(self) -> bool:
+        return all(self._query_bool(f"OUTP?{self._chan_query(ch)}") for ch in self._selected_channels())
+
+    def _query_selected(self, cmd_base: str) -> list[float]:
+        return [self._query_float(f"{cmd_base}{self._chan_query(ch)}") for ch in self._selected_channels()]
+
+    def _single_or_equal(self, values: list[float], what: str) -> float:
+        if len(values) == 1:
+            return values[0]
+        if abs(values[0]-values[1]) > 1e-6:
+            raise RuntimeError(f"PSW {what} mismatch between CH1 ({values[0]:.12g}) and CH2 ({values[1]:.12g}).")
+        return values[0]
+
+    def get_voltage_set(self) -> float:
+        return self._single_or_equal(self._query_selected("SOUR:VOLT:LEV:IMM:AMPL?"), "voltage setpoint")
+
+    def get_current_set(self) -> float:
+        return self._single_or_equal(self._query_selected("SOUR:CURR:LEV:IMM:AMPL?"), "current setpoint")
+
+    def voltage_limits(self) -> Tuple[float, float]:
+        return self.V_MIN, self.V_MAX
+
+    def current_limits(self) -> Tuple[float, float]:
+        return self.I_MIN, self.I_MAX
+
+    def measure_voltage(self) -> float:
+        vals = self._query_selected("MEAS:SCAL:VOLT:DC?")
+        return vals[0] if len(vals)==1 else min(vals)
+
+    def measure_current(self) -> float:
+        vals = self._query_selected("MEAS:SCAL:CURR:DC?")
+        return vals[0] if len(vals)==1 else max(vals)
+
+    def measure_voltage_both(self) -> tuple[float, float]:
+        ch = self._selected_channels()
+        if len(ch) == 2:
+            vals = self._query_selected("MEAS:SCAL:VOLT:DC?")
+            return vals[0], vals[1]
+        v = self._query_float(f"MEAS:SCAL:VOLT:DC?{self._chan_query(ch[0])}")
+        return (v, float("nan")) if ch[0] == 1 else (float("nan"), v)
+
+    def measure_current_both(self) -> tuple[float, float]:
+        ch = self._selected_channels()
+        if len(ch) == 2:
+            vals = self._query_selected("MEAS:SCAL:CURR:DC?")
+            return vals[0], vals[1]
+        i = self._query_float(f"MEAS:SCAL:CURR:DC?{self._chan_query(ch[0])}")
+        return (i, float("nan")) if ch[0] == 1 else (float("nan"), i)
+
+    def close(self) -> None:
+        try:
+            self.inst.close()
+        except Exception:
+            pass
+
+
+def create_psu(psu_kind: PsuKind, *, keysight_addr: str = KEYSIGHT_N8957A_ADDR, gwinstek_ip: str = GWINSTEK_PSW720H88_IP, gwinstek_port: int = GWINSTEK_PSW720H88_PORT, gwinstek_channel_selection: str = GWINSTEK_PSW720H88_DEFAULT_CHANNEL_SELECTION, timeout_ms: int = 10000) -> PsuDevice:
+    if psu_kind == "keysight_n8957a":
+        return N8957A(addr=keysight_addr, timeout_ms=timeout_ms)
+    if psu_kind == "gwinstek_psw720h88_lan":
+        return PSW720H88Lan(ip_address=gwinstek_ip, port=gwinstek_port, channel_selection=gwinstek_channel_selection, timeout_ms=timeout_ms)
+    raise ValueError(f"Unsupported PSU type: {psu_kind!r}")
+
+
 ####VNA helper: HP 8720C (GPIB)
 
 VNA_ADDR = "GPIB0::16::INSTR"
 VNA_TIMEOUT_MS = 12000
-
-USE_PSW720_BY_DEFAULT = True
-KEYSIGHT_N8957A_ADDR = "GPIB0::5::INSTR"
-GWINSTEK_PSW720H88_IP = "192.168.1.125"
-GWINSTEK_PSW720H88_PORT = 2268
-GWINSTEK_PSW720H88_DEFAULT_CHANNEL_SELECTION = "1"
-
-
-def parse_psw_channel_selection(value: str) -> str:
-    parsed = str(value).strip().lower()
-    if parsed not in {"1", "2", "both"}:
-        raise ValueError("PSW channel must be one of: '1', '2', 'both'.")
-    return parsed
 
 #configure sweep and grab complex trace
 class HP8720C:
@@ -929,11 +1166,10 @@ class ScanGUI:
         def worker():
             psw = None
             try:
-                psw = create_psu(
-                    "gwinstek_psw720h88_lan",
-                    gwinstek_ip=GWINSTEK_PSW720H88_IP,
-                    gwinstek_port=GWINSTEK_PSW720H88_PORT,
-                    gwinstek_channel_selection=channel,
+                psw = PSW720H88Lan(
+                    ip_address=GWINSTEK_PSW720H88_IP,
+                    port=GWINSTEK_PSW720H88_PORT,
+                    channel_selection=channel,
                 )
                 idn = psw.idn()
                 vmin, vmax = psw.voltage_limits()
