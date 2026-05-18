@@ -11,7 +11,7 @@ import csv
 import threading
 import time
 from pathlib import Path
-from typing import Tuple, Callable
+from typing import Tuple, Callable, Protocol, Literal, Optional
 import serial
 import struct
 import numpy as np
@@ -266,7 +266,28 @@ def move_abs(rtu: RTU, steps: int) -> bool:
 
 ##### PSU (Keysight N8957A)
 
-PSU_ADDR = "GPIB0::5::INSTR"
+PsuKind = Literal["keysight_n8957a", "gwinstek_psw720h88"]
+
+
+class PSUDevice(Protocol):
+    def idn(self) -> str: ...
+    def output_on(self) -> None: ...
+    def output_off(self) -> None: ...
+    def output_state(self) -> bool: ...
+    def set_voltage(self, volts: float) -> None: ...
+    def set_current(self, amps: float) -> None: ...
+    def get_voltage_set(self) -> float: ...
+    def get_current_set(self) -> float: ...
+    def voltage_limits(self) -> Tuple[float, float]: ...
+    def current_limits(self) -> Tuple[float, float]: ...
+    def measure_voltage(self) -> float: ...
+    def measure_current(self) -> float: ...
+    def close(self) -> None: ...
+
+
+KEYSIGHT_N8957A_ADDR = "GPIB0::5::INSTR"
+GWINSTEK_PSW720H88_ADDR = "GPIB0::6::INSTR"
+GWINSTEK_PSW720H88_DEFAULT_CHANNEL = 1
 
 """ helper for:
       - set/get programmed voltage & current
@@ -274,7 +295,7 @@ PSU_ADDR = "GPIB0::5::INSTR"
       - output on/off and state query
     """
 class N8957A:
-    def __init__(self, addr: str = PSU_ADDR, timeout_ms: int = 10000):
+    def __init__(self, addr: str = KEYSIGHT_N8957A_ADDR, timeout_ms: int = 10000):
         rm = pyvisa.ResourceManager()
         self.inst = rm.open_resource(addr)
         self.inst.timeout = timeout_ms
@@ -430,7 +451,7 @@ class HP8720C:
 
 #PSU helper: sanity checks
 def check_psu(
-    psu: N8957A,
+    psu: PSUDevice,
     set_v: float,
     set_i: float,
     v_tol_abs: float,
@@ -475,7 +496,7 @@ def check_psu(
 
 def acquire_at_angle(
     rtu: RTU,
-    psu: N8957A,
+    psu: PSUDevice,
     vna: HP8720C,
     angle_deg: float,
     set_v: float,
