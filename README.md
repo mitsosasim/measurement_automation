@@ -61,7 +61,7 @@ Key variables:
 6. Enter the PSW IP address.
 7. Select channel 1 or 2.
 8. The software controls only the selected channel.
-9. The software clamps setpoints to 0..800 V and 0..1.44 A.
+9. The software rejects out-of-range setpoints before output can be turned on (0..800 V and 0..1.44 A).
 10. The two channels must not be treated as serial or parallel outputs.
 
 PyVISA resource format used internally:
