@@ -18,6 +18,14 @@ import numpy as np
 import pyvisa
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from scripts.psu import (
+    PsuDevice,
+    PsuKind,
+    create_psu,
+    GWINSTEK_PSW720H88_DEFAULT_IP,
+    GWINSTEK_PSW720H88_DEFAULT_PORT,
+    GWINSTEK_PSW720H88_DEFAULT_CHANNEL,
+)
 
 
 #####RS485 MOTOR
@@ -264,79 +272,6 @@ def move_abs(rtu: RTU, steps: int) -> bool:
 
 
 
-##### PSU (Keysight N8957A)
-
-PSU_ADDR = "GPIB0::5::INSTR"
-
-""" helper for:
-      - set/get programmed voltage & current
-      - measure actual voltage & current
-      - output on/off and state query
-    """
-class N8957A:
-    def __init__(self, addr: str = PSU_ADDR, timeout_ms: int = 10000):
-        rm = pyvisa.ResourceManager()
-        self.inst = rm.open_resource(addr)
-        self.inst.timeout = timeout_ms
-        self.clear()
-
-    def clear(self):
-        try:
-            self.inst.clear()
-        except Exception:
-            pass
-
-    def idn(self) -> str:
-        return self.inst.query("*IDN?").strip()
-
-    #output control
-    def output_on(self):
-        self.inst.write("OUTP ON")
-
-    def output_off(self):
-        self.inst.write("OUTP OFF")
-
-    def output_state(self) -> bool:
-        return bool(int(self.inst.query("OUTP?").strip()))
-    
-
-    #program setpoints
-    def set_voltage(self, volts: float):
-        self.inst.write(f"VOLT {volts}")
-
-    def set_current(self, amps: float):
-        self.inst.write(f"CURR {amps}")
-
-    def get_voltage_set(self) -> float:
-        return float(self.inst.query("VOLT?"))
-
-    def get_current_set(self) -> float:
-        return float(self.inst.query("CURR?"))
-
-    def voltage_limits(self) -> Tuple[float, float]:
-        vmin = float(self.inst.query("VOLT? MIN"))
-        vmax = float(self.inst.query("VOLT? MAX"))
-        return vmin, vmax
-
-    def current_limits(self) -> Tuple[float, float]:
-        imin = float(self.inst.query("CURR? MIN"))
-        imax = float(self.inst.query("CURR? MAX"))
-        return imin, imax
-
-    #measurements
-    def measure_voltage(self) -> float:
-        return float(self.inst.query("MEAS:VOLT?"))
-
-    def measure_current(self) -> float:
-        return float(self.inst.query("MEAS:CURR?"))
-
-    def close(self):
-        try:
-            self.inst.close()
-        except Exception:
-            pass
-
-
 ####VNA helper: HP 8720C (GPIB)
 
 VNA_ADDR = "GPIB0::16::INSTR"
@@ -430,7 +365,7 @@ class HP8720C:
 
 #PSU helper: sanity checks
 def check_psu(
-    psu: N8957A,
+    psu: PsuDevice,
     set_v: float,
     set_i: float,
     v_tol_abs: float,
@@ -475,7 +410,7 @@ def check_psu(
 
 def acquire_at_angle(
     rtu: RTU,
-    psu: N8957A,
+    psu: PsuDevice,
     vna: HP8720C,
     angle_deg: float,
     set_v: float,
@@ -668,6 +603,10 @@ def run_scan(
     stop_flag: Callable[[], bool],
     measure_s11: bool,
     measure_s21: bool,
+    psu_kind: PsuKind,
+    psu_ip: str,
+    psu_port: int,
+    psu_channel: int,
 ) -> None:
 
     center_hz = vna_center_ghz * 1e9
@@ -682,7 +621,12 @@ def run_scan(
     configure_motion_once(rtu)
 
     # PSU
-    psu = N8957A()
+    psu = create_psu(
+        kind=psu_kind,
+        ip=psu_ip,
+        port=psu_port,
+        channel=psu_channel,
+    )
     log(f"[PSU] ID: {psu.idn()}")
 
     # VNA
@@ -816,6 +760,19 @@ class ScanGUI:
         self.current_var = add_entry("Current", 0.25, "A")
         self.v_tol_var = add_entry("V tol ±", 750.0, "V") #manual states programming accuracy of 0.1% of full-scale voltage so 1500V * 0.1% = 1.5V
         self.i_tol_var = add_entry("I tol ±", 0.25, "A")
+        self.psu_kind_var = tk.StringVar(value="keysight_n8957a")
+        ttk.Label(params_frame, text="PSU type").grid(row=row, column=0, sticky="w", pady=2)
+        ttk.Combobox(
+            params_frame,
+            textvariable=self.psu_kind_var,
+            values=["keysight_n8957a", "gwinstek_psw720h88_lan"],
+            state="readonly",
+            width=24,
+        ).grid(row=row, column=1, columnspan=2, sticky="w", pady=2)
+        row += 1
+        self.psu_ip_var = add_entry("PSW LAN IP", GWINSTEK_PSW720H88_DEFAULT_IP, "")
+        self.psu_port_var = add_entry("PSW LAN port", GWINSTEK_PSW720H88_DEFAULT_PORT, "")
+        self.psu_channel_var = add_entry("PSW channel", GWINSTEK_PSW720H88_DEFAULT_CHANNEL, "")
 
         ttk.Separator(params_frame).grid(row=row, column=0, columnspan=3, sticky="ew", pady=4)
         row += 1
@@ -904,6 +861,10 @@ class ScanGUI:
             current = float(self.current_var.get())
             v_tol_abs = float(self.v_tol_var.get())
             i_tol_abs = float(self.i_tol_var.get())
+            psu_kind = self.psu_kind_var.get()
+            psu_ip = self.psu_ip_var.get().strip()
+            psu_port = int(self.psu_port_var.get())
+            psu_channel = int(self.psu_channel_var.get())
 
             cooldown = float(self.cooldown_var.get())
             psu_settle = float(self.psu_settle_var.get())
@@ -956,6 +917,10 @@ class ScanGUI:
                     stop_flag=stop_flag,
                     measure_s11=s11_enabled,
                     measure_s21=s21_enabled,
+                    psu_kind=psu_kind,
+                    psu_ip=psu_ip,
+                    psu_port=psu_port,
+                    psu_channel=psu_channel,
                 )
             except Exception as e:
                 self.gui_log(f"ERROR: {e}")
