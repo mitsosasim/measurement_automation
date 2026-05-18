@@ -746,6 +746,7 @@ class ScanGUI:
         self.root = root
         self.root.title("METEORITE Antenna Scan Controller")
         self.stop_requested = False
+        self.scan_thread = None
 
         # main frame 
         main = ttk.Frame(root, padding=10)
@@ -790,20 +791,56 @@ class ScanGUI:
         self.current_var = add_entry("Current", 0.25, "A")
         self.v_tol_var = add_entry("V tol ±", 750.0, "V") #manual states programming accuracy of 0.1% of full-scale voltage so 1500V * 0.1% = 1.5V
         self.i_tol_var = add_entry("I tol ±", 0.25, "A")
-        self.psu_kind_var = tk.StringVar(value="keysight_n8957a")
-        ttk.Label(params_frame, text="PSU type").grid(row=row, column=0, sticky="w", pady=2)
-        ttk.Combobox(
+        self.use_gwinstek_psw_var = tk.BooleanVar(value=False)
+        self.gwinstek_psw_ip_var = tk.StringVar(value=GWINSTEK_PSW720H88_DEFAULT_IP)
+        self.gwinstek_psw_port_var = tk.IntVar(value=2268)
+        self.gwinstek_psw_channel_var = tk.IntVar(value=1)
+        self.keysight_psu_addr_var = tk.StringVar(value=KEYSIGHT_N8957A_ADDR)
+        self.use_gwinstek_psw_check = ttk.Checkbutton(
             params_frame,
-            textvariable=self.psu_kind_var,
-            values=["keysight_n8957a", "gwinstek_psw720h88_lan"],
-            state="readonly",
-            width=24,
-        ).grid(row=row, column=1, columnspan=2, sticky="w", pady=2)
+            text="Use GW Instek PSW-720H88 over LAN instead of Keysight N8957A",
+            variable=self.use_gwinstek_psw_var,
+        )
+        self.use_gwinstek_psw_check.grid(row=row, column=0, columnspan=3, sticky="w", pady=2)
         row += 1
-        self.keysight_psu_addr_var = add_entry("Keysight GPIB addr", KEYSIGHT_N8957A_ADDR, "")
-        self.psu_ip_var = add_entry("PSW LAN IP", GWINSTEK_PSW720H88_DEFAULT_IP, "")
-        self.psu_port_var = add_entry("PSW LAN port", GWINSTEK_PSW720H88_DEFAULT_PORT, "")
-        self.psu_channel_var = add_entry("PSW channel", GWINSTEK_PSW720H88_DEFAULT_CHANNEL, "")
+        ttk.Label(params_frame, text="Keysight GPIB addr").grid(row=row, column=0, sticky="w", pady=2)
+        self.keysight_psu_addr_entry = ttk.Entry(
+            params_frame,
+            textvariable=self.keysight_psu_addr_var,
+            width=18,
+        )
+        self.keysight_psu_addr_entry.grid(row=row, column=1, sticky="w", pady=2)
+        ttk.Label(params_frame, text="").grid(row=row, column=2, sticky="w")
+        row += 1
+        ttk.Label(params_frame, text="GW PSW IP:").grid(row=row, column=0, sticky="w", pady=2)
+        self.gwinstek_psw_ip_entry = ttk.Entry(
+            params_frame,
+            textvariable=self.gwinstek_psw_ip_var,
+            width=18,
+        )
+        self.gwinstek_psw_ip_entry.grid(row=row, column=1, sticky="w", pady=2)
+        ttk.Label(params_frame, text="").grid(row=row, column=2, sticky="w")
+        row += 1
+        ttk.Label(params_frame, text="GW PSW port:").grid(row=row, column=0, sticky="w", pady=2)
+        self.gwinstek_psw_port_entry = ttk.Entry(
+            params_frame,
+            textvariable=self.gwinstek_psw_port_var,
+            width=8,
+        )
+        self.gwinstek_psw_port_entry.grid(row=row, column=1, sticky="w", pady=2)
+        ttk.Label(params_frame, text="").grid(row=row, column=2, sticky="w")
+        row += 1
+        ttk.Label(params_frame, text="GW PSW channel:").grid(row=row, column=0, sticky="w", pady=2)
+        self.gwinstek_psw_channel_combo = ttk.Combobox(
+            params_frame,
+            textvariable=self.gwinstek_psw_channel_var,
+            values=[1, 2],
+            width=5,
+            state="readonly",
+        )
+        self.gwinstek_psw_channel_combo.grid(row=row, column=1, sticky="w", pady=2)
+        ttk.Label(params_frame, text="").grid(row=row, column=2, sticky="w")
+        row += 1
 
         ttk.Separator(params_frame).grid(row=row, column=0, columnspan=3, sticky="ew", pady=4)
         row += 1
@@ -883,6 +920,9 @@ class ScanGUI:
         self.root.after(0, append)
 
     def on_start(self):
+        if self.scan_thread is not None and self.scan_thread.is_alive():
+            messagebox.showerror("Scan in progress", "A scan is already running.")
+            return
         try:
             start_angle = float(self.start_angle_var.get())
             end_angle = float(self.end_angle_var.get())
@@ -892,11 +932,15 @@ class ScanGUI:
             current = float(self.current_var.get())
             v_tol_abs = float(self.v_tol_var.get())
             i_tol_abs = float(self.i_tol_var.get())
-            psu_kind = self.psu_kind_var.get()
+            psu_kind = (
+                "gwinstek_psw720h88_lan"
+                if self.use_gwinstek_psw_var.get()
+                else "keysight_n8957a"
+            )
             keysight_psu_addr = self.keysight_psu_addr_var.get().strip()
-            psu_ip = self.psu_ip_var.get().strip()
-            psu_port = int(self.psu_port_var.get())
-            psu_channel = int(self.psu_channel_var.get())
+            gwinstek_psw_ip = self.gwinstek_psw_ip_var.get().strip()
+            gwinstek_psw_port = int(self.gwinstek_psw_port_var.get())
+            gwinstek_psw_channel = int(self.gwinstek_psw_channel_var.get())
 
             cooldown = float(self.cooldown_var.get())
             psu_settle = float(self.psu_settle_var.get())
@@ -919,10 +963,30 @@ class ScanGUI:
         if not (s11_enabled or s21_enabled):
             messagebox.showerror("Invalid selection", "Select at least one S-parameter (S11 and/or S21).")
             return
+        try:
+            if psu_kind == "keysight_n8957a":
+                if not keysight_psu_addr:
+                    raise ValueError("Keysight PSU VISA address must not be empty.")
+
+            if psu_kind == "gwinstek_psw720h88_lan":
+                if not gwinstek_psw_ip:
+                    raise ValueError("GW Instek PSW IP address must not be empty.")
+                if gwinstek_psw_port != 2268:
+                    raise ValueError("GW Instek PSW socket server port must be 2268.")
+                if gwinstek_psw_channel not in (1, 2):
+                    raise ValueError("GW Instek PSW channel must be 1 or 2.")
+        except ValueError as e:
+            messagebox.showerror("Invalid input", str(e))
+            return
 
         self.stop_requested = False
         self.start_button.config(state="disabled")
         self.stop_button.config(state="normal")
+        self.use_gwinstek_psw_check.config(state="disabled")
+        self.gwinstek_psw_ip_entry.config(state="disabled")
+        self.gwinstek_psw_port_entry.config(state="disabled")
+        self.gwinstek_psw_channel_combo.config(state="disabled")
+        self.keysight_psu_addr_entry.config(state="disabled")
 
         self.gui_log("Starting scan…")
 
@@ -951,9 +1015,9 @@ class ScanGUI:
                     measure_s21=s21_enabled,
                     psu_kind=psu_kind,
                     keysight_psu_addr=keysight_psu_addr,
-                    gwinstek_psw_ip=psu_ip,
-                    gwinstek_psw_port=psu_port,
-                    gwinstek_psw_channel=psu_channel,
+                    gwinstek_psw_ip=gwinstek_psw_ip,
+                    gwinstek_psw_port=gwinstek_psw_port,
+                    gwinstek_psw_channel=gwinstek_psw_channel,
                 )
             except Exception as e:
                 self.gui_log(f"ERROR: {e}")
@@ -962,11 +1026,17 @@ class ScanGUI:
                 def reenable():
                     self.start_button.config(state="normal")
                     self.stop_button.config(state="disabled")
+                    self.use_gwinstek_psw_check.config(state="normal")
+                    self.gwinstek_psw_ip_entry.config(state="normal")
+                    self.gwinstek_psw_port_entry.config(state="normal")
+                    self.gwinstek_psw_channel_combo.config(state="readonly")
+                    self.keysight_psu_addr_entry.config(state="normal")
+                    self.scan_thread = None
 
                 self.root.after(0, reenable)
 
-        t = threading.Thread(target=worker, daemon=True)
-        t.start()
+        self.scan_thread = threading.Thread(target=worker, daemon=True)
+        self.scan_thread.start()
 
     def on_stop(self):
         """Stop button: ask scan to stop after current angle."""
