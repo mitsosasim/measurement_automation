@@ -136,6 +136,48 @@ def test_psw_rejects_invalid_channel(monkeypatch):
         PSW720H88Lan(ip_address="192.168.1.123", channel=3)
 
 
+
+
+def test_psw_requires_non_empty_ip(monkeypatch):
+    _install_fake_pyvisa(monkeypatch)
+
+    with pytest.raises(ValueError, match="must not be empty"):
+        PSW720H88Lan(ip_address="   ", channel=1)
+
+
+def test_psw_requires_port_2268(monkeypatch):
+    _install_fake_pyvisa(monkeypatch)
+
+    with pytest.raises(ValueError, match="must be 2268"):
+        PSW720H88Lan(ip_address="192.168.1.123", port=5025, channel=1)
+
+
+def test_psw_uses_expected_socket_resource_and_lf_terminators(monkeypatch):
+    fake_rm = _install_fake_pyvisa(monkeypatch)
+
+    psu = PSW720H88Lan(ip_address="10.1.2.3", port=2268, channel=2)
+
+    assert fake_rm.last_resource_name == "TCPIP0::10.1.2.3::2268::SOCKET"
+    assert fake_rm.last_instrument.write_termination == "\n"
+    assert fake_rm.last_instrument.read_termination == "\n"
+    psu.close()
+
+
+def test_psw_channel_2_only_uses_selected_channel(monkeypatch):
+    fake_rm = _install_fake_pyvisa(monkeypatch)
+    psu = PSW720H88Lan(ip_address="192.168.1.123", channel=2)
+
+    psu.set_voltage(50.0)
+    psu.set_current(0.5)
+    psu.get_voltage_set()
+    psu.get_current_set()
+    psu.measure_voltage()
+    psu.measure_current()
+
+    joined = "\n".join(fake_rm.last_instrument.commands)
+    assert "(@2)" in joined
+    assert "(@1)" not in joined
+
 def test_factory_returns_expected_backends(monkeypatch):
     _install_fake_pyvisa(monkeypatch)
 
