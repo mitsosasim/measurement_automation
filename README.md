@@ -51,18 +51,21 @@ Key variables:
     chosen directory (default `data/`) with names like `2.0A_10.0V_+090deg.csv`.
 
 
-## GW Instek PSW-720H88 LAN setup
+## Current lab PSU setup (PSW-720H88)
 
-1. Connect the PSW LAN port to the same network as the control PC.
+1. Mini PC Ethernet IP: `192.168.1.146`.
+2. PSW IP: `192.168.1.125`.
+3. PSW socket server port: `2268`.
+4. Browser status/config page should open at: `http://192.168.1.125`.
+5. Connect the PSW LAN port to the same network as the control PC.
 2. On the PSW front panel, enable LAN.
 3. Enable the socket server.
-4. The PSW socket server port is fixed at 2268.
-5. In the GUI, check "Use GW Instek PSW-720H88 over LAN instead of Keysight N8957A".
-6. Enter the PSW IP address.
-7. Select channel 1 or 2.
-8. The software controls only the selected channel.
-9. The software rejects out-of-range setpoints before output can be turned on (0..800 V and 0..1.44 A).
-10. The two channels must not be treated as serial or parallel outputs.
+4. The GUI checkbox label is: `use PSW-720 instead of Keysight N8957A`.
+5. The GUI no longer exposes PSW IP/port fields; these are fixed in code constants.
+6. Channel modes are: `1`, `2`, `both`.
+7. `both` mode controls CH1 and CH2 independently with identical setpoints; it does **not** series/parallel-combine the channels.
+8. The software rejects out-of-range setpoints before output can be turned on (0..800 V and 0..1.44 A).
+9. PSW current is programmed as a current limit; seeing 0 A at a valid voltage is normal when the load draws little/no current.
 
 PyVISA resource format used internally:
 
