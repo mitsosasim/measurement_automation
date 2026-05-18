@@ -615,59 +615,62 @@ def run_scan(
     span_hz = vna_span_ghz * 1e9
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    log("===== Initializing hardware =====")
-
-    # Motor
-    rtu = RTU(PORT, BAUD, TIMEOUT_S)
-    log(f"[MOTOR] Connected {PORT}, {BAUD} 8E1, DEV={DEV}")
-    configure_motion_once(rtu)
-
-    # PSU
-    psu = create_psu(
-        psu_kind,
-        keysight_addr=keysight_psu_addr,
-        gwinstek_ip=gwinstek_psw_ip,
-        gwinstek_port=gwinstek_psw_port,
-        gwinstek_channel=gwinstek_psw_channel,
-    )
-    log(f"[PSU] Backend: {psu_kind}")
-    log(f"[PSU] ID: {psu.idn()}")
-
-    vmin, vmax = psu.voltage_limits()
-    imin, imax = psu.current_limits()
-
-    log(f"[PSU] Limits: {vmin:.6g}..{vmax:.6g} V, {imin:.6g}..{imax:.6g} A")
-
-    if not (vmin <= set_voltage_v <= vmax):
-        raise RuntimeError(
-            f"Requested voltage {set_voltage_v:.6g} V is outside selected PSU range "
-            f"{vmin:.6g}..{vmax:.6g} V."
-        )
-
-    if not (imin <= set_current_a <= imax):
-        raise RuntimeError(
-            f"Requested current {set_current_a:.6g} A is outside selected PSU range "
-            f"{imin:.6g}..{imax:.6g} A."
-        )
-
-    # VNA
-    vna = HP8720C()
-    log(f"[VNA] ID: {vna.idn()}")
-    vna.configure_sweep(center_hz, span_hz)
-
-    # Move to start angle once
-    start_steps = deg_to_steps(start_angle_deg)
-    log(f"[MOTOR] Moving to start angle {start_angle_deg:+.1f}°")
-    move_abs(rtu, start_steps)
-
-    # Number of positions (inclusive of both ends)
-    n_pos = int(round((end_angle_deg - start_angle_deg) / angle_step_deg)) + 1
-    log(
-        f"[SCAN] {n_pos} positions from {start_angle_deg:+.1f}° "
-        f"to {end_angle_deg:+.1f}° in {angle_step_deg:.1f}° steps"
-    )
+    psu = None
+    vna = None
+    rtu = None
 
     try:
+        log("===== Initializing hardware =====")
+
+        # Motor
+        rtu = RTU(PORT, BAUD, TIMEOUT_S)
+        log(f"[MOTOR] Connected {PORT}, {BAUD} 8E1, DEV={DEV}")
+        configure_motion_once(rtu)
+
+        # PSU
+        psu = create_psu(
+            psu_kind,
+            keysight_addr=keysight_psu_addr,
+            gwinstek_ip=gwinstek_psw_ip,
+            gwinstek_port=gwinstek_psw_port,
+            gwinstek_channel=gwinstek_psw_channel,
+        )
+        log(f"[PSU] Backend: {psu_kind}")
+        log(f"[PSU] ID: {psu.idn()}")
+
+        vmin, vmax = psu.voltage_limits()
+        imin, imax = psu.current_limits()
+
+        log(f"[PSU] Limits: {vmin:.6g}..{vmax:.6g} V, {imin:.6g}..{imax:.6g} A")
+
+        if not (vmin <= set_voltage_v <= vmax):
+            raise RuntimeError(
+                f"Requested voltage {set_voltage_v:.6g} V is outside selected PSU range "
+                f"{vmin:.6g}..{vmax:.6g} V."
+            )
+
+        if not (imin <= set_current_a <= imax):
+            raise RuntimeError(
+                f"Requested current {set_current_a:.6g} A is outside selected PSU range "
+                f"{imin:.6g}..{imax:.6g} A."
+            )
+
+        # VNA
+        vna = HP8720C()
+        log(f"[VNA] ID: {vna.idn()}")
+        vna.configure_sweep(center_hz, span_hz)
+
+        # Move to start angle once
+        start_steps = deg_to_steps(start_angle_deg)
+        log(f"[MOTOR] Moving to start angle {start_angle_deg:+.1f}°")
+        move_abs(rtu, start_steps)
+
+        # Number of positions (inclusive of both ends)
+        n_pos = int(round((end_angle_deg - start_angle_deg) / angle_step_deg)) + 1
+        log(
+            f"[SCAN] {n_pos} positions from {start_angle_deg:+.1f}° "
+            f"to {end_angle_deg:+.1f}° in {angle_step_deg:.1f}° steps"
+        )
         for idx in range(n_pos):
             if stop_flag():
                 log("[SCAN] Stop requested, ending scan.")
@@ -710,25 +713,31 @@ def run_scan(
         log("[SCAN] Done.")
 
     finally:
-        #this block always runs, even if there is an exception
         log("[SHUTDOWN] Cleaning up (PSU OFF, closing devices)...")
-        try:
-            psu.output_off()
-        except Exception:
-            pass
-        try:
-            psu.close()
-        except Exception:
-            pass
-        try:
-            vna.close()
-        except Exception:
-            pass
-        try:
-            rtu.close()
-        except Exception:
-            pass
-        log("[SHUTDOWN] Done.")
+
+        if psu is not None:
+            try:
+                psu.output_off()
+            except Exception as exc:
+                log(f"[SHUTDOWN] WARNING: failed to turn PSU output off: {exc}")
+            try:
+                psu.close()
+            except Exception as exc:
+                log(f"[SHUTDOWN] WARNING: failed to close PSU: {exc}")
+
+        if vna is not None:
+            try:
+                vna.close()
+            except Exception as exc:
+                log(f"[SHUTDOWN] WARNING: failed to close VNA: {exc}")
+
+        if rtu is not None:
+            try:
+                rtu.close()
+            except Exception as exc:
+                log(f"[SHUTDOWN] WARNING: failed to close motor serial port: {exc}")
+
+        log("[SHUTDOWN] Complete.")
 
 
 #Tkinter GUI 
