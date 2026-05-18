@@ -1,4 +1,5 @@
 import pyvisa
+import time
 from typing import Optional, Protocol, Tuple, Literal
 
 PsuKind = Literal["keysight_n8957a", "gwinstek_psw720h88_lan"]
@@ -243,8 +244,11 @@ class PSW720H88Lan:
     def output_on(self) -> None:
         self.inst.write(f"OUTP ON{self._chan_set()}")
         self._check_error_queue()
-        if not self.output_state():
-            raise RuntimeError(f"PSW-720H88 channel {self.channel} did not report output ON.")
+        for _ in range(10):
+            if self.output_state():
+                return
+            time.sleep(0.1)
+        raise RuntimeError(f"PSW-720H88 channel {self.channel} did not report output ON.")
 
     def output_off(self) -> None:
         self.inst.write(f"OUTP OFF{self._chan_set()}")
@@ -266,6 +270,86 @@ class PSW720H88Lan:
             pass
 
 
+class DualPSW720H88Lan:
+    def __init__(
+        self,
+        ip_address: str = GWINSTEK_PSW720H88_DEFAULT_IP,
+        port: int = GWINSTEK_PSW720H88_DEFAULT_PORT,
+        timeout_ms: int = 10000,
+    ):
+        self.ch1 = PSW720H88Lan(ip_address=ip_address, port=port, channel=1, timeout_ms=timeout_ms)
+        self.ch2 = PSW720H88Lan(ip_address=ip_address, port=port, channel=2, timeout_ms=timeout_ms)
+
+    def idn(self) -> str:
+        return f"CH1={self.ch1.idn()} | CH2={self.ch2.idn()}"
+
+    def output_on(self) -> None:
+        self.ch1.output_on()
+        try:
+            self.ch2.output_on()
+        except Exception:
+            try:
+                self.ch1.output_off()
+            except Exception:
+                pass
+            raise
+
+    def output_off(self) -> None:
+        errors = []
+        for channel in (self.ch1, self.ch2):
+            try:
+                channel.output_off()
+            except Exception as exc:
+                errors.append(str(exc))
+        if errors:
+            raise RuntimeError(" ; ".join(errors))
+
+    def output_state(self) -> bool:
+        return self.ch1.output_state() and self.ch2.output_state()
+
+    def set_voltage(self, volts: float) -> None:
+        self.ch1.set_voltage(volts)
+        self.ch2.set_voltage(volts)
+
+    def set_current(self, amps: float) -> None:
+        self.ch1.set_current(amps)
+        self.ch2.set_current(amps)
+
+    def get_voltage_set(self) -> float:
+        return self.ch1.get_voltage_set()
+
+    def get_current_set(self) -> float:
+        return self.ch1.get_current_set()
+
+    def voltage_limits(self) -> Tuple[float, float]:
+        return self.ch1.voltage_limits()
+
+    def current_limits(self) -> Tuple[float, float]:
+        return self.ch1.current_limits()
+
+    def measure_voltage(self) -> float:
+        return self.ch1.measure_voltage()
+
+    def measure_current(self) -> float:
+        return self.ch1.measure_current()
+
+    def measure_voltage_both(self) -> Tuple[float, float]:
+        return self.ch1.measure_voltage(), self.ch2.measure_voltage()
+
+    def measure_current_both(self) -> Tuple[float, float]:
+        return self.ch1.measure_current(), self.ch2.measure_current()
+
+    def close(self) -> None:
+        errors = []
+        for channel in (self.ch1, self.ch2):
+            try:
+                channel.close()
+            except Exception as exc:
+                errors.append(str(exc))
+        if errors:
+            raise RuntimeError(" ; ".join(errors))
+
+
 def create_psu(
     psu_kind: PsuKind,
     *,
@@ -273,12 +357,24 @@ def create_psu(
     gwinstek_ip: str = GWINSTEK_PSW720H88_DEFAULT_IP,
     gwinstek_port: int = GWINSTEK_PSW720H88_DEFAULT_PORT,
     gwinstek_channel: int = GWINSTEK_PSW720H88_DEFAULT_CHANNEL,
+    gwinstek_channel_selection: Optional[str] = None,
     timeout_ms: int = 10000,
 ) -> PsuDevice:
     if psu_kind == "keysight_n8957a":
         return N8957A(addr=keysight_addr, timeout_ms=timeout_ms)
 
     if psu_kind == "gwinstek_psw720h88_lan":
+        if gwinstek_channel_selection is not None:
+            if gwinstek_channel_selection == "both":
+                return DualPSW720H88Lan(
+                    ip_address=gwinstek_ip,
+                    port=gwinstek_port,
+                    timeout_ms=timeout_ms,
+                )
+            if gwinstek_channel_selection in ("1", "2"):
+                gwinstek_channel = int(gwinstek_channel_selection)
+            else:
+                raise ValueError(f"Unsupported PSW channel selection: {gwinstek_channel_selection!r}")
         return PSW720H88Lan(
             ip_address=gwinstek_ip,
             port=gwinstek_port,

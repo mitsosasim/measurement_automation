@@ -23,10 +23,6 @@ from scripts.psu import (
     PsuKind,
     PSW720H88Lan,
     create_psu,
-    GWINSTEK_PSW720H88_DEFAULT_IP,
-    GWINSTEK_PSW720H88_DEFAULT_PORT,
-    GWINSTEK_PSW720H88_DEFAULT_CHANNEL,
-    KEYSIGHT_N8957A_ADDR,
 )
 
 
@@ -279,6 +275,19 @@ def move_abs(rtu: RTU, steps: int) -> bool:
 VNA_ADDR = "GPIB0::16::INSTR"
 VNA_TIMEOUT_MS = 12000
 
+USE_PSW720_BY_DEFAULT = True
+KEYSIGHT_N8957A_ADDR = "GPIB0::5::INSTR"
+GWINSTEK_PSW720H88_IP = "192.168.1.125"
+GWINSTEK_PSW720H88_PORT = 2268
+GWINSTEK_PSW720H88_DEFAULT_CHANNEL_SELECTION = "1"
+
+
+def parse_psw_channel_selection(value: str) -> str:
+    parsed = str(value).strip().lower()
+    if parsed not in {"1", "2", "both"}:
+        raise ValueError("PSW channel must be one of: '1', '2', 'both'.")
+    return parsed
+
 #configure sweep and grab complex trace
 class HP8720C:
     def __init__(self, addr: str = VNA_ADDR, timeout_ms: int = VNA_TIMEOUT_MS):
@@ -388,6 +397,13 @@ def check_psu(
         f"set V={set_v:.3f} V, meas V={v_meas:.3f} V | "
         f"set I={set_i:.3f} A, meas I={i_meas:.3f} A"
     )
+    if hasattr(psu, "measure_voltage_both") and hasattr(psu, "measure_current_both"):
+        v1, v2 = psu.measure_voltage_both()
+        i1, i2 = psu.measure_current_both()
+        log(
+            f"[PSU {label}] CH1 meas V={v1:.3f} V, I={i1:.3f} A | "
+            f"CH2 meas V={v2:.3f} V, I={i2:.3f} A"
+        )
 
     if v_tol_abs < 0 or i_tol_abs < 0:
         raise RuntimeError("Voltage/current tolerances must be non-negative.")
@@ -606,10 +622,7 @@ def run_scan(
     measure_s11: bool,
     measure_s21: bool,
     psu_kind: PsuKind,
-    keysight_psu_addr: str,
-    gwinstek_psw_ip: str,
-    gwinstek_psw_port: int,
-    gwinstek_psw_channel: int,
+    psw_channel_selection: str,
 ) -> None:
 
     center_hz = vna_center_ghz * 1e9
@@ -631,12 +644,15 @@ def run_scan(
         # PSU
         psu = create_psu(
             psu_kind,
-            keysight_addr=keysight_psu_addr,
-            gwinstek_ip=gwinstek_psw_ip,
-            gwinstek_port=gwinstek_psw_port,
-            gwinstek_channel=gwinstek_psw_channel,
+            keysight_addr=KEYSIGHT_N8957A_ADDR,
+            gwinstek_ip=GWINSTEK_PSW720H88_IP,
+            gwinstek_port=GWINSTEK_PSW720H88_PORT,
+            gwinstek_channel_selection=psw_channel_selection,
         )
         log(f"[PSU] Backend: {psu_kind}")
+        log(f"[PSU] Channel selection: {psw_channel_selection}")
+        if psw_channel_selection == "both":
+            log("[PSU] Controlling PSW CH1 and CH2 independently with identical setpoints.")
         log(f"[PSU] ID: {psu.idn()}")
 
         vmin, vmax = psu.voltage_limits()
@@ -792,50 +808,20 @@ class ScanGUI:
         self.current_var = add_entry("Current", 0.25, "A")
         self.v_tol_var = add_entry("V tol ±", 750.0, "V") #manual states programming accuracy of 0.1% of full-scale voltage so 1500V * 0.1% = 1.5V
         self.i_tol_var = add_entry("I tol ±", 0.25, "A")
-        self.use_gwinstek_psw_var = tk.BooleanVar(value=False)
-        self.gwinstek_psw_ip_var = tk.StringVar(value=GWINSTEK_PSW720H88_DEFAULT_IP)
-        self.gwinstek_psw_port_var = tk.IntVar(value=GWINSTEK_PSW720H88_DEFAULT_PORT)
-        self.gwinstek_psw_channel_var = tk.IntVar(value=GWINSTEK_PSW720H88_DEFAULT_CHANNEL)
-        self.keysight_psu_addr_var = tk.StringVar(value=KEYSIGHT_N8957A_ADDR)
+        self.use_gwinstek_psw_var = tk.BooleanVar(value=USE_PSW720_BY_DEFAULT)
+        self.gwinstek_psw_channel_var = tk.StringVar(value=GWINSTEK_PSW720H88_DEFAULT_CHANNEL_SELECTION)
         self.use_gwinstek_psw_check = ttk.Checkbutton(
             params_frame,
-            text="Use GW Instek PSW-720H88 over LAN instead of Keysight N8957A",
+            text="use PSW-720 instead of Keysight N8957A",
             variable=self.use_gwinstek_psw_var,
         )
         self.use_gwinstek_psw_check.grid(row=row, column=0, columnspan=3, sticky="w", pady=2)
         row += 1
-        ttk.Label(params_frame, text="Keysight GPIB addr").grid(row=row, column=0, sticky="w", pady=2)
-        self.keysight_psu_addr_entry = ttk.Entry(
-            params_frame,
-            textvariable=self.keysight_psu_addr_var,
-            width=18,
-        )
-        self.keysight_psu_addr_entry.grid(row=row, column=1, sticky="w", pady=2)
-        ttk.Label(params_frame, text="").grid(row=row, column=2, sticky="w")
-        row += 1
-        ttk.Label(params_frame, text="GW PSW IP:").grid(row=row, column=0, sticky="w", pady=2)
-        self.gwinstek_psw_ip_entry = ttk.Entry(
-            params_frame,
-            textvariable=self.gwinstek_psw_ip_var,
-            width=18,
-        )
-        self.gwinstek_psw_ip_entry.grid(row=row, column=1, sticky="w", pady=2)
-        ttk.Label(params_frame, text="").grid(row=row, column=2, sticky="w")
-        row += 1
-        ttk.Label(params_frame, text="GW PSW port:").grid(row=row, column=0, sticky="w", pady=2)
-        self.gwinstek_psw_port_entry = ttk.Entry(
-            params_frame,
-            textvariable=self.gwinstek_psw_port_var,
-            width=8,
-        )
-        self.gwinstek_psw_port_entry.grid(row=row, column=1, sticky="w", pady=2)
-        ttk.Label(params_frame, text="").grid(row=row, column=2, sticky="w")
-        row += 1
-        ttk.Label(params_frame, text="GW PSW channel:").grid(row=row, column=0, sticky="w", pady=2)
+        ttk.Label(params_frame, text="PSW channel").grid(row=row, column=0, sticky="w", pady=2)
         self.gwinstek_psw_channel_combo = ttk.Combobox(
             params_frame,
             textvariable=self.gwinstek_psw_channel_var,
-            values=[1, 2],
+            values=["1", "2", "both"],
             width=5,
             state="readonly",
         )
@@ -932,20 +918,23 @@ class ScanGUI:
             return
 
         try:
-            ip_address = self.gwinstek_psw_ip_var.get().strip()
-            port = int(self.gwinstek_psw_port_var.get())
-            channel = int(self.gwinstek_psw_channel_var.get())
+            channel = parse_psw_channel_selection(self.gwinstek_psw_channel_var.get())
         except Exception as exc:
             messagebox.showerror("Invalid input", f"Please check GW PSW LAN settings.\n\n{exc}")
             return
 
         self.test_gw_psw_lan_button.config(state="disabled")
-        self.gui_log(f"[PSU TEST] Connecting to GW PSW LAN at {ip_address}:{port} channel {channel} ...")
+        self.gui_log(f"[PSU TEST] Connecting to GW PSW LAN at {GWINSTEK_PSW720H88_IP}:{GWINSTEK_PSW720H88_PORT} channel {channel} ...")
 
         def worker():
             psw = None
             try:
-                psw = PSW720H88Lan(ip_address=ip_address, port=port, channel=channel)
+                psw = create_psu(
+                    "gwinstek_psw720h88_lan",
+                    gwinstek_ip=GWINSTEK_PSW720H88_IP,
+                    gwinstek_port=GWINSTEK_PSW720H88_PORT,
+                    gwinstek_channel_selection=channel,
+                )
                 idn = psw.idn()
                 vmin, vmax = psw.voltage_limits()
                 imin, imax = psw.current_limits()
@@ -986,10 +975,7 @@ class ScanGUI:
                 if self.use_gwinstek_psw_var.get()
                 else "keysight_n8957a"
             )
-            keysight_psu_addr = self.keysight_psu_addr_var.get().strip()
-            gwinstek_psw_ip = self.gwinstek_psw_ip_var.get().strip()
-            gwinstek_psw_port = int(self.gwinstek_psw_port_var.get())
-            gwinstek_psw_channel = int(self.gwinstek_psw_channel_var.get())
+            psw_channel_selection = parse_psw_channel_selection(self.gwinstek_psw_channel_var.get())
 
             cooldown = float(self.cooldown_var.get())
             psu_settle = float(self.psu_settle_var.get())
@@ -1013,17 +999,8 @@ class ScanGUI:
             messagebox.showerror("Invalid selection", "Select at least one S-parameter (S11 and/or S21).")
             return
         try:
-            if psu_kind == "keysight_n8957a":
-                if not keysight_psu_addr:
-                    raise ValueError("Keysight PSU VISA address must not be empty.")
-
             if psu_kind == "gwinstek_psw720h88_lan":
-                if not gwinstek_psw_ip:
-                    raise ValueError("GW Instek PSW IP address must not be empty.")
-                if gwinstek_psw_port != 2268:
-                    raise ValueError("GW Instek PSW socket server port must be 2268.")
-                if gwinstek_psw_channel not in (1, 2):
-                    raise ValueError("GW Instek PSW channel must be 1 or 2.")
+                parse_psw_channel_selection(psw_channel_selection)
         except ValueError as e:
             messagebox.showerror("Invalid input", str(e))
             return
@@ -1033,10 +1010,7 @@ class ScanGUI:
         self.stop_button.config(state="normal")
         self.test_gw_psw_lan_button.config(state="disabled")
         self.use_gwinstek_psw_check.config(state="disabled")
-        self.gwinstek_psw_ip_entry.config(state="disabled")
-        self.gwinstek_psw_port_entry.config(state="disabled")
         self.gwinstek_psw_channel_combo.config(state="disabled")
-        self.keysight_psu_addr_entry.config(state="disabled")
 
         self.gui_log("Starting scan…")
 
@@ -1064,10 +1038,7 @@ class ScanGUI:
                     measure_s11=s11_enabled,
                     measure_s21=s21_enabled,
                     psu_kind=psu_kind,
-                    keysight_psu_addr=keysight_psu_addr,
-                    gwinstek_psw_ip=gwinstek_psw_ip,
-                    gwinstek_psw_port=gwinstek_psw_port,
-                    gwinstek_psw_channel=gwinstek_psw_channel,
+                    psw_channel_selection=psw_channel_selection,
                 )
             except Exception as e:
                 self.gui_log(f"ERROR: {e}")
@@ -1078,10 +1049,7 @@ class ScanGUI:
                     self.stop_button.config(state="disabled")
                     self.test_gw_psw_lan_button.config(state="normal")
                     self.use_gwinstek_psw_check.config(state="normal")
-                    self.gwinstek_psw_ip_entry.config(state="normal")
-                    self.gwinstek_psw_port_entry.config(state="normal")
                     self.gwinstek_psw_channel_combo.config(state="readonly")
-                    self.keysight_psu_addr_entry.config(state="normal")
                     self.scan_thread = None
 
                 self.root.after(0, reenable)
