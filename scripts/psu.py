@@ -266,19 +266,30 @@ class PSW720H88Lan:
             pass
 
 
-def create_psu(kind: PsuKind = "keysight_n8957a", *, addr: Optional[str] = None, ip: Optional[str] = None, port: Optional[int] = None, channel: Optional[int] = None) -> PsuDevice:
-    if kind == "keysight_n8957a":
-        return N8957A(addr=addr or KEYSIGHT_N8957A_ADDR)
-    if kind == "gwinstek_psw720h88_lan":
+def create_psu(
+    psu_kind: PsuKind,
+    *,
+    keysight_addr: str = KEYSIGHT_N8957A_ADDR,
+    gwinstek_ip: str = GWINSTEK_PSW720H88_DEFAULT_IP,
+    gwinstek_port: int = GWINSTEK_PSW720H88_DEFAULT_PORT,
+    gwinstek_channel: int = GWINSTEK_PSW720H88_DEFAULT_CHANNEL,
+    timeout_ms: int = 10000,
+) -> PsuDevice:
+    if psu_kind == "keysight_n8957a":
+        return N8957A(addr=keysight_addr, timeout_ms=timeout_ms)
+
+    if psu_kind == "gwinstek_psw720h88_lan":
         return PSW720H88Lan(
-            ip_address=ip or GWINSTEK_PSW720H88_DEFAULT_IP,
-            port=port or GWINSTEK_PSW720H88_DEFAULT_PORT,
-            channel=channel or GWINSTEK_PSW720H88_DEFAULT_CHANNEL,
+            ip_address=gwinstek_ip,
+            port=gwinstek_port,
+            channel=gwinstek_channel,
+            timeout_ms=timeout_ms,
         )
-    raise ValueError(f"Unsupported PSU kind: {kind}")
+
+    raise ValueError(f"Unsupported PSU type: {psu_kind!r}")
 
 if __name__ == "__main__":
-    psu = N8957A()
+    psu = create_psu("keysight_n8957a")
     print("ID:", psu.idn())
     # Example use:
     vmin, vmax = psu.voltage_limits()
