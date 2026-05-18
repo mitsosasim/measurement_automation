@@ -794,8 +794,8 @@ class ScanGUI:
         self.i_tol_var = add_entry("I tol ±", 0.25, "A")
         self.use_gwinstek_psw_var = tk.BooleanVar(value=False)
         self.gwinstek_psw_ip_var = tk.StringVar(value=GWINSTEK_PSW720H88_DEFAULT_IP)
-        self.gwinstek_psw_port_var = tk.IntVar(value=2268)
-        self.gwinstek_psw_channel_var = tk.IntVar(value=1)
+        self.gwinstek_psw_port_var = tk.IntVar(value=GWINSTEK_PSW720H88_DEFAULT_PORT)
+        self.gwinstek_psw_channel_var = tk.IntVar(value=GWINSTEK_PSW720H88_DEFAULT_CHANNEL)
         self.keysight_psu_addr_var = tk.StringVar(value=KEYSIGHT_N8957A_ADDR)
         self.use_gwinstek_psw_check = ttk.Checkbutton(
             params_frame,
