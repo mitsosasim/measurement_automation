@@ -62,3 +62,9 @@ Key variables:
 	motor controller expects swapped 32-bit word order adjust the helpers.
 
 <img width="690" height="966" alt="Screenshot 2025-11-24 103321" src="https://github.com/user-attachments/assets/f6a91a58-02b5-4486-8df0-34c62a2c1871" />
+
+
+## Testing
+
+- Install pytest if needed: `pip install pytest`
+- Run PSU backend tests: `pytest tests/test_psu_backends.py`
