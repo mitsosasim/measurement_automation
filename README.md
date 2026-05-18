@@ -51,6 +51,24 @@ Key variables:
     chosen directory (default `data/`) with names like `2.0A_10.0V_+090deg.csv`.
 
 
+## GW Instek PSW-720H88 LAN setup
+
+1. Connect the PSW LAN port to the same network as the control PC.
+2. On the PSW front panel, enable LAN.
+3. Enable the socket server.
+4. The PSW socket server port is fixed at 2268.
+5. In the GUI, check "Use GW Instek PSW-720H88 over LAN instead of Keysight N8957A".
+6. Enter the PSW IP address.
+7. Select channel 1 or 2.
+8. The software controls only the selected channel.
+9. The software clamps setpoints to 0..800 V and 0..1.44 A.
+10. The two channels must not be treated as serial or parallel outputs.
+
+PyVISA resource format used internally:
+
+`TCPIP0::<PSW_IP>::2268::SOCKET`
+
+
 ## Troubleshooting
 
 - Serial/Modbus CRC failures: verify wiring, correct `PORT`, `BAUD`, device `DEV`,
