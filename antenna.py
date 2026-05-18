@@ -622,10 +622,10 @@ def run_scan(
 
     # PSU
     psu = create_psu(
-        kind=psu_kind,
-        ip=psu_ip,
-        port=psu_port,
-        channel=psu_channel,
+        psu_kind,
+        gwinstek_ip=psu_ip,
+        gwinstek_port=psu_port,
+        gwinstek_channel=psu_channel,
     )
     log(f"[PSU] ID: {psu.idn()}")
 
